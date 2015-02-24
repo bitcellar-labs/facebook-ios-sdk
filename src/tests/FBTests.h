@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 Facebook
+ * Copyright 2010-present Facebook.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,65 +14,51 @@
  * limitations under the License.
  */
 
-#import <SenTestingKit/SenTestingKit.h>
-#import "FBTestSession.h"
+#import <OCMock/OCMock.h>
+
+#import <XCTest/XCTest.h>
+
 #import "FBRequestConnection.h"
+#import "FBSDKMacros.h"
+#import "FBSession.h"
 
-// The following #defines are designed as a convenience during development
-// to disable certain categories of tests. They should never be left on
-// in committed code.
+FBSDK_EXTERN NSString *kTestToken;
+FBSDK_EXTERN NSString *kTestAppId;
 
-//#define FACEBOOKSDK_SKIP_CACHE_TESTS
-//#define FACEBOOKSDK_SKIP_COMMON_REQUEST_TESTS
-//#define FACEBOOKSDK_SKIP_GRAPH_OBJECT_TESTS
-//#define FACEBOOKSDK_SKIP_OPEN_GRAPH_ACTION_TESTS
-//#define FACEBOOKSDK_SKIP_SESSION_TESTS
-//#define FACEBOOKSDK_SKIP_BATCH_REQUEST_TESTS
-//#define FACEBOOKSDK_SKIP_REQUEST_CONNECTION_TESTS
-//#define FACEBOOKSDK_SKIP_TEST_SESSION_TESTS
-//#define FACEBOOKSDK_SKIP_CONTENT_LINK_TESTS
+typedef void (^HTTPStubCallback)(NSURLRequest *request);
+
 
 @class FBTestBlocker;
 @protocol FBGraphObject;
 
-// Base class for unit-tests that use test users; ensures that all test users
-// created by a unit-test are deleted (by invalidating their session) during
-// tear-down.
-@interface FBTests : SenTestCase
+@interface FBTests : XCTestCase
 
-// For many test case scenarios, we just need a single session with a set of permissions
-// that can be shared and used by each individual test. For the simple case, this is that
-// session.
-@property (readonly, retain) FBTestSession *defaultTestSession;
+- (FBRequestHandler)handlerExpectingSuccessSignaling:(FBTestBlocker *)blocker;
+- (FBRequestHandler)handlerExpectingFailureSignaling:(FBTestBlocker *)blocker;
 
-- (FBRequestHandler)handlerExpectingSuccessSignaling:(FBTestBlocker*)blocker;
-- (FBRequestHandler)handlerExpectingFailureSignaling:(FBTestBlocker*)blocker; 
+// Used to test methods that dispatch blocks to the GCD main queue
+- (void)waitForMainQueueToFinish;
 
-- (FBTestSession *)getSessionWithSharedUserWithPermissions:(NSArray*)permissions;
-- (FBTestSession *)getSessionWithSharedUserWithPermissions:(NSArray*)permissions 
-                                             uniqueUserTag:(NSString*)uniqueUserTag;
+// Methods related to session mocking.
+- (FBSession *)createAndOpenSessionWithMockToken;
+- (FBAccessTokenData *)createValidMockToken;
+- (FBSessionTokenCachingStrategy *)createMockTokenCachingStrategyWithToken:(FBAccessTokenData *)token;
+- (FBSessionTokenCachingStrategy *)createMockTokenCachingStrategyWithValidToken;
+- (FBSessionTokenCachingStrategy *)createMockTokenCachingStrategyWithExpiredToken;
 
-- (FBTestSession *)loginSession:(FBTestSession *)session;
-- (void)makeTestUserInSession:(FBTestSession*)session1 friendsWithTestUserInSession:(FBTestSession*)session2;
+// Helpers for using OHHTTPStubs in tests.
+- (void)stubAllResponsesWithResult:(id)result;
+- (void)stubAllResponsesWithResult:(id)result
+                        statusCode:(int)statusCode;
+- (void)stubAllResponsesWithResult:(id)result
+                        statusCode:(int)statusCode
+                          callback:(HTTPStubCallback)callback;
+- (void)stubMatchingRequestsWithResponses:(NSDictionary *)requestsAndResponses
+                               statusCode:(int)statusCode
+                                 callback:(HTTPStubCallback)callback;
 
-- (void)validateGraphObject:(id<FBGraphObject>)graphObject 
-              hasProperties:(NSArray*)propertyNames;
-- (void)validateGraphObjectWithId:(NSString*)idString 
-                    hasProperties:(NSArray*)propertyNames 
-                      withSession:(FBSession*)session;
-- (void)postAndValidateWithSession:(FBSession*)session
-                         graphPath:(NSString*)graphPath
-                       graphObject:(id)graphObject
-                     hasProperties:(NSArray*)propertyNames;
-- (id)batchedPostAndGetWithSession:(FBSession*)session 
-                         graphPath:(NSString*)graphPath 
-                       graphObject:(id)graphObject;
-- (UIImage *)createSquareTestImage:(int)size;
+- (OCMockObject *)mainBundleMock;
 
-// Subclasses can define this to get defaultTestSessions with specific permissions.
-// The set of permissions should be static, as no guarantee is made how many times this will be called.
-// The default is nil.
-- (NSArray*)permissionsForDefaultTestSession;
-- (void)logRequestsAndConnections;
+@property (nonatomic, retain) id mockFBUtility;
 
 @end

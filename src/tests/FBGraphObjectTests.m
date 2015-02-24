@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 Facebook
+ * Copyright 2010-present Facebook.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,14 @@
  * limitations under the License.
  */
 
+#import "FBGraphLocation.h"
+#import "FBGraphObject.h"
+#import "FBGraphPlace.h"
+#import "FBGraphUser.h"
 #import "FBRequest.h"
 #import "FBRequestConnection.h"
-#import "FBGraphObjectTests.h"
-#import "FBGraphObject.h"
-#import "FBGraphUser.h"
-#import "FBGraphPlace.h"
-#import "FBGraphLocation.h"
 #import "FBTestBlocker.h"
 #import "FBTests.h"
-
-#if defined(FACEBOOKSDK_SKIP_GRAPH_OBJECT_TESTS)
-
-#pragma message ("warning: Skipping FBGraphObjectTests")
-
-#else
 
 @protocol TestGraphProtocolTooManyArgs<FBGraphObject>
 - (int)thisMethod:(int)has too:(int)many args:(int)yikes;
@@ -36,78 +29,132 @@
 
 @protocol TestGraphProtocolOptionalMethod<FBGraphObject>
 @optional
-- (NSString*)name;
+- (NSString *)name;
 @end
 
 @protocol TestGraphProtocolVeryFewMethods<FBGraphObject>
 @end
 
 @protocol T1<FBGraphObject>
-- (NSString*)name;
+- (NSString *)name;
 @end
 
 @protocol T2
 @end
 
 @protocol TestGraphProtocolBoooBadLineage
-- (NSString*)name;
+- (NSString *)name;
 @end
 
 @protocol TestGraphProtocolBoooBadLineage2<TestGraphProtocolTooManyArgs>
-- (NSString*)title;
+- (NSString *)title;
 @end
 
 @protocol TestGraphProtocolGoodLineage3<T1, T2>
-- (NSString*)title;
+- (NSString *)title;
 @end
 
 @protocol TestGraphProtocolGoodLineage<TestGraphProtocolVeryFewMethods>
-- (NSString*)title;
+- (NSString *)title;
 @end
 
 @protocol TestGraphProtocolGoodLineage2<TestGraphProtocolVeryFewMethods, T1>
-- (NSString*)title;
+- (NSString *)title;
+@end
+
+@protocol NamedGraphObject<FBGraphObject>
+@property (nonatomic, retain) NSString *name;
+@end
+
+@protocol NamedGraphObjectWithExtras<NamedGraphObject>
+- (void)methodWithAnArg:(id)arg1 andAnotherArg:(id)arg2;
+@end
+
+@interface FBGraphObject (FBGraphObjectTests)
++ (instancetype)graphObjectWrappingObject:(id)originalObject;
+@end
+
+@interface FBGraphObjectTests : FBTests
 @end
 
 @implementation FBGraphObjectTests
+
+- (void)testCreateEmptyGraphObject {
+    id<FBGraphObject> graphObject = [FBGraphObject graphObject];
+    XCTAssertNotNil(graphObject, @"could not create FBGraphObject");
+}
+
+- (void)testCanSetProperty {
+    id<NamedGraphObject> graphObject = (id<NamedGraphObject>)[FBGraphObject graphObject];
+    [graphObject setName:@"A name"];
+    assertThat([graphObject name], equalTo(@"A name"));
+}
+
+- (void)testRespondsToSelector {
+    id<NamedGraphObject> graphObject = (id<NamedGraphObject>)[FBGraphObject graphObject];
+    BOOL respondsToSelector = [graphObject respondsToSelector:@selector(setName:)];
+    assertThatBool(respondsToSelector, equalToBool(YES));
+}
+
+- (void)testDoesNotHandleNonGetterSetter {
+    @try {
+        id<NamedGraphObjectWithExtras> graphObject = (id<NamedGraphObjectWithExtras>)[FBGraphObject graphObject];
+        [graphObject methodWithAnArg:@"foo" andAnotherArg:@"bar"];
+        XCTFail(@"should have gotten exception");
+    } @catch (NSException *exception) {
+    }
+}
+
+- (void)testCanRemoveObject {
+    NSDictionary *initial = [[NSDictionary alloc] initWithObjectsAndKeys:
+                             @"value", @"key",
+                             nil];
+    NSMutableDictionary<FBGraphObject> *graphObject = [FBGraphObject graphObjectWrappingDictionary:initial];
+
+    XCTAssertNotNil([graphObject objectForKey:@"key"], @"should have 'key'");
+
+    [graphObject removeObjectForKey:@"key"];
+
+    XCTAssertNil([graphObject objectForKey:@"key"], @"should not have 'key'");
+}
 
 - (void)testWrapWithGraphObject
 {
     // construct a dictionary with an array and object as values
     NSMutableDictionary *d = [NSMutableDictionary dictionary];
-    [d setObject:[NSArray arrayWithObjects:@"one", [NSMutableDictionary dictionary], @"three", nil] 
+    [d setObject:[NSArray arrayWithObjects:@"one", [NSMutableDictionary dictionary], @"three", nil]
           forKey:@"array"];
     [d setObject:[NSMutableDictionary dictionary] forKey:@"object"];
-    
+
     // make sure we got the object we expected when FBGraphObject-ifying it
     id obj = [FBGraphObject graphObjectWrappingDictionary:d];
-    STAssertTrue([obj class] == [FBGraphObject class], @"Wrong class for resulting graph object");
-        
+    XCTAssertTrue([obj class] == [FBGraphObject class], @"Wrong class for resulting graph object");
+
     // make sure we don't double-wrap
     id obj2 = [FBGraphObject graphObjectWrappingDictionary:obj];
-    STAssertTrue(obj == obj2, @"Different object implies faulty double-wrap");
-    
+    XCTAssertTrue(obj == obj2, @"Different object implies faulty double-wrap");
+
     // use inferred implementation to fetch obj.array
     NSMutableArray *arr = [obj performSelector:@selector(array)];
-    
+
     // did we get our array?
-    STAssertTrue([arr isKindOfClass:[NSMutableArray class]], @"Wrong class for resulting graph object array");
-    
+    XCTAssertTrue([arr isKindOfClass:[NSMutableArray class]], @"Wrong class for resulting graph object array");
+
     // make sure we don't double-wrap arrays
     obj2 = [FBGraphObject performSelector:@selector(graphObjectWrappingObject:) withObject:arr];
-    STAssertTrue(arr == obj2, @"Different object implies faulty double-wrap");
-    
+    XCTAssertTrue(arr == obj2, @"Different object implies faulty double-wrap");
+
     // is the first object the expected object?
-    STAssertTrue([arr objectAtIndex:0] == @"one", @"Wrong array contents");
-    
+    XCTAssertTrue([[arr objectAtIndex:0] isEqual:@"one"], @"Wrong array contents");
+
     // is the second index in the array wrapped?
-    STAssertTrue([[arr objectAtIndex:1] class] == [FBGraphObject class], @"Wrong class for array element");
-    
+    XCTAssertTrue([[arr objectAtIndex:1] class] == [FBGraphObject class], @"Wrong class for array element");
+
     // is the second object in the dictionary wrapped?
-    STAssertTrue([[obj objectForKey:@"object"] class] == [FBGraphObject class], @"Wrong class for object item");
-    
+    XCTAssertTrue([[obj objectForKey:@"object"] class] == [FBGraphObject class], @"Wrong class for object item");
+
     // nil case?
-    STAssertNil([FBGraphObject graphObjectWrappingDictionary:nil], @"Wrong result for nil wrapper");
+    XCTAssertNil([FBGraphObject graphObjectWrappingDictionary:nil], @"Wrong result for nil wrapper");
 }
 
 - (void)testGraphObjectProtocolImplInference
@@ -115,60 +162,23 @@
     // get an object
     NSMutableDictionary *obj = [NSMutableDictionary dictionary];
     obj = [FBGraphObject graphObjectWrappingDictionary:obj];
-    
+
     // assert its ability to be used with graph protocols (Note: new graph protocols should get a new line here
-    STAssertTrue([obj conformsToProtocol:@protocol(FBGraphUser)], @"protocol inference is broken");
-    STAssertTrue([obj conformsToProtocol:@protocol(FBGraphPlace)], @"protocol inference is broken");
-    STAssertTrue([obj conformsToProtocol:@protocol(FBGraphLocation)], @"protocol inference is broken");
-    
+    XCTAssertTrue([obj conformsToProtocol:@protocol(FBGraphUser)], @"protocol inference is broken");
+    XCTAssertTrue([obj conformsToProtocol:@protocol(FBGraphPlace)], @"protocol inference is broken");
+    XCTAssertTrue([obj conformsToProtocol:@protocol(FBGraphLocation)], @"protocol inference is broken");
+
     // prove to ourselves we aren't always getting a yes
-    STAssertFalse([obj conformsToProtocol:@protocol(TestGraphProtocolTooManyArgs)], @"protocol should not be inferrable");
-    STAssertFalse([obj conformsToProtocol:@protocol(TestGraphProtocolOptionalMethod)], @"protocol should not be inferrable");
-    STAssertFalse([obj conformsToProtocol:@protocol(TestGraphProtocolBoooBadLineage)], @"protocol should not be inferrable");
-    STAssertFalse([obj conformsToProtocol:@protocol(TestGraphProtocolBoooBadLineage2)], @"protocol should not be inferrable");
+    XCTAssertFalse([obj conformsToProtocol:@protocol(TestGraphProtocolTooManyArgs)], @"protocol should not be inferrable");
+    XCTAssertFalse([obj conformsToProtocol:@protocol(TestGraphProtocolOptionalMethod)], @"protocol should not be inferrable");
+    XCTAssertFalse([obj conformsToProtocol:@protocol(TestGraphProtocolBoooBadLineage)], @"protocol should not be inferrable");
+    XCTAssertFalse([obj conformsToProtocol:@protocol(TestGraphProtocolBoooBadLineage2)], @"protocol should not be inferrable");
 
     // some additional yes cases
-    STAssertTrue([obj conformsToProtocol:@protocol(TestGraphProtocolGoodLineage)], @"protocol inference is broken");
-    STAssertTrue([obj conformsToProtocol:@protocol(TestGraphProtocolGoodLineage2)], @"protocol inference is broken");
-    STAssertTrue([obj conformsToProtocol:@protocol(TestGraphProtocolVeryFewMethods)], @"protocol should be inferrable");
-    STAssertTrue([obj conformsToProtocol:@protocol(TestGraphProtocolGoodLineage3)], @"protocol should be inferrable");
-}
-
-- (void)testGraphObjectTypedRequest
-{
-    FBTestBlocker *blocker = [[[FBTestBlocker alloc] init] autorelease];
-    [FBRequestConnection startWithGraphPath:@"4" // Zuck
-                          completionHandler:^(FBRequestConnection *connection, id<FBGraphUser> zuck, NSError *error) {
-                              STAssertTrue([zuck.first_name isEqualToString:@"Mark"], @"zuck != zuck");
-                              STAssertTrue([zuck.last_name isEqualToString:@"Zuckerberg"], @"zuck != zuck");
-                              [blocker signal];
-                          }];
-    
-    [blocker wait];
-    
-    blocker = [[[FBTestBlocker alloc] init] autorelease];
-    [FBRequestConnection startWithGraphPath:@"100902843288017" // great fried chicken
-                          completionHandler:^(FBRequestConnection *connection, id<FBGraphPlace> chicken, NSError *error) {
-                              STAssertTrue([chicken.name isEqualToString:@"Ezell's Famous Chicken"], @"name wrong");
-                              STAssertTrue([chicken.location.city isEqualToString:@"Woodinville"], @"city wrong");
-                              STAssertTrue([chicken.location.state isEqualToString:@"WA"], @"state wrong");
-                              [blocker signal];
-                          }];
-    
-    [blocker wait];
-}
-
-- (void)testGraphObjectTypedRequest2
-{
-    FBTestBlocker *blocker = [[[FBTestBlocker alloc] init] autorelease];
-    [FBRequestConnection startWithGraphPath:@"4" // Zuck
-                          completionHandler:^(FBRequestConnection *connection, id<FBGraphUser> zuck, NSError *error) {
-                              STAssertTrue([zuck.first_name isEqualToString:@"Mark"], @"zuck != zuck");
-                              STAssertTrue([zuck.last_name isEqualToString:@"Zuckerberg"], @"zuck != zuck");
-                              [blocker signal];
-                          }];
-    
-    [blocker wait];
+    XCTAssertTrue([obj conformsToProtocol:@protocol(TestGraphProtocolGoodLineage)], @"protocol inference is broken");
+    XCTAssertTrue([obj conformsToProtocol:@protocol(TestGraphProtocolGoodLineage2)], @"protocol inference is broken");
+    XCTAssertTrue([obj conformsToProtocol:@protocol(TestGraphProtocolVeryFewMethods)], @"protocol should be inferrable");
+    XCTAssertTrue([obj conformsToProtocol:@protocol(TestGraphProtocolGoodLineage3)], @"protocol should be inferrable");
 }
 
 - (void)testGraphObjectSameID
@@ -191,44 +201,44 @@
     objNoID = [FBGraphObject graphObjectWrappingDictionary:objNoID];
     id objAnotherNoID = [NSMutableDictionary dictionary];
     objAnotherNoID = [FBGraphObject graphObjectWrappingDictionary:objAnotherNoID];
-    
-    STAssertTrue([FBGraphObject isGraphObjectID:obj sameAs:objSameID], @"same ID");
-    STAssertTrue([FBGraphObject isGraphObjectID:obj sameAs:obj], @"same object");
-    
-    STAssertFalse([FBGraphObject isGraphObjectID:obj sameAs:objDifferentID], @"not same ID");
-    
+
+    XCTAssertTrue([FBGraphObject isGraphObjectID:obj sameAs:objSameID], @"same ID");
+    XCTAssertTrue([FBGraphObject isGraphObjectID:obj sameAs:obj], @"same object");
+
+    XCTAssertFalse([FBGraphObject isGraphObjectID:obj sameAs:objDifferentID], @"not same ID");
+
     // Objects with no ID should never match
-    STAssertFalse([FBGraphObject isGraphObjectID:obj sameAs:objNoID], @"no ID");
-    STAssertFalse([FBGraphObject isGraphObjectID:objNoID sameAs:obj], @"no ID");
-    
+    XCTAssertFalse([FBGraphObject isGraphObjectID:obj sameAs:objNoID], @"no ID");
+    XCTAssertFalse([FBGraphObject isGraphObjectID:objNoID sameAs:obj], @"no ID");
+
     // Nil objects should never match an object with an ID
-    STAssertFalse([FBGraphObject isGraphObjectID:obj sameAs:nil], @"nil object");
-    STAssertFalse([FBGraphObject isGraphObjectID:nil sameAs:obj], @"nil object");
-    
+    XCTAssertFalse([FBGraphObject isGraphObjectID:obj sameAs:nil], @"nil object");
+    XCTAssertFalse([FBGraphObject isGraphObjectID:nil sameAs:obj], @"nil object");
+
     // Having no ID is different than being a nil object
-    STAssertFalse([FBGraphObject isGraphObjectID:objNoID sameAs:nil], @"nil object");
-    
+    XCTAssertFalse([FBGraphObject isGraphObjectID:objNoID sameAs:nil], @"nil object");
+
     // Two objects with no ID shouldn't match unless they are the same object.
-    STAssertFalse([FBGraphObject isGraphObjectID:objNoID sameAs:objAnotherNoID], @"no IDs but different objects");
-    STAssertTrue([FBGraphObject isGraphObjectID:objNoID sameAs:objNoID], @"no ID but same object");
+    XCTAssertFalse([FBGraphObject isGraphObjectID:objNoID sameAs:objAnotherNoID], @"no IDs but different objects");
+    XCTAssertTrue([FBGraphObject isGraphObjectID:objNoID sameAs:objNoID], @"no ID but same object");
 }
 
-- (id)graphObjectWithUnwrappedData 
+- (id)graphObjectWithUnwrappedData
 {
     NSDictionary *rawDictionary1 = [NSDictionary dictionaryWithObjectsAndKeys:@"world", @"hello", nil];
     NSDictionary *rawDictionary2 = [NSDictionary dictionaryWithObjectsAndKeys:@"world", @"bye", nil];
     NSArray *rawArray1 = [NSArray arrayWithObjects:@"anda1", @"anda2", @"anda3", nil];
     NSArray *rawArray2 = [NSArray arrayWithObjects:@"anda1", @"anda2", @"anda3", nil];
-    
+
     NSDictionary *rawObject = [NSDictionary dictionaryWithObjectsAndKeys:
-                               rawDictionary1, @"dict1", 
-                               rawDictionary2, @"dict2", 
+                               rawDictionary1, @"dict1",
+                               rawDictionary2, @"dict2",
                                rawArray1, @"array1",
                                rawArray2, @"array2",
                                nil];
     NSDictionary<FBGraphObject> *graphObject = [FBGraphObject graphObjectWrappingDictionary:rawObject];
 
-    return graphObject;    
+    return graphObject;
 }
 
 - (void)traverseGraphObject:(id)graphObject
@@ -236,44 +246,15 @@
     if ([graphObject isKindOfClass:[NSDictionary class]]) {
         for (NSString *key in graphObject) {
             id value = [graphObject objectForKey:key];
-            STAssertNotNil(value, @"missing value");
+            XCTAssertNotNil(value, @"missing value");
             [self traverseGraphObject:value];
-        }    
+        }
     } else if ([graphObject isKindOfClass:[NSArray class]]) {
         for (NSString *value in graphObject) {
-            STAssertNotNil(value, @"missing value");
+            XCTAssertNotNil(value, @"missing value");
             [self traverseGraphObject:value];
-        }            
+        }
     }
-}
-
-- (void)testSimpleGraphGet
-{
-    __block FBTestBlocker *blocker = [[FBTestBlocker alloc] init];
-    [FBSession setActiveSession:self.defaultTestSession];
-    [FBRequestConnection startWithGraphPath:@"TourEiffel"
-                          completionHandler:[self handlerExpectingSuccessSignaling:blocker]];
-    
-    [blocker wait];
-    [blocker release];
-
-}
-
-- (void)testSimpleGraphGetWithExpectedFailure
-{
-    __block FBTestBlocker *blocker = [[FBTestBlocker alloc] init];
-    [FBSession setActiveSession:self.defaultTestSession];
-    [FBRequestConnection startWithGraphPath:@"-1"
-                          completionHandler:[self handlerExpectingFailureSignaling:blocker]];
-    [blocker wait];
-    [blocker release];
-    
-}
-
-- (void)testFastEnumeration
-{
-    id graphObject = [self graphObjectWithUnwrappedData];
-    [self traverseGraphObject:graphObject];
 }
 
 - (void)testEnumeration
@@ -282,99 +263,86 @@
     [self traverseGraphObject:graphObject];
 }
 
-- (id)postStatusUpdate
+- (void)testArrayObjectEnumerator
 {
-    id<FBGraphObject> status = [FBGraphObject graphObject];
-    // Posting duplicate messages will generate an error.
-    NSString *statusMessage = [NSString stringWithFormat:@"Check out my awesome new status update posted at %@.", [NSDate date]];
-    [status setObject:statusMessage forKey:@"message"];
+    NSMutableDictionary<FBGraphObject> *obj = [self createGraphObjectWithArray];
+    NSMutableArray *array = [obj objectForKey:@"array"];
+
+    NSEnumerator *enumerator = [array objectEnumerator];
+    id o;
+    int count = 0;
+    while (o = [enumerator nextObject]) {
+        assertThat(o, notNilValue());
+        count++;
+    }
+    assertThatInt(count, equalToInt(3));
+}
+
+- (void)testArrayObjectReverseEnumerator
+{
+    NSMutableDictionary<FBGraphObject> *obj = [self createGraphObjectWithArray];
+    NSMutableArray *array = [obj objectForKey:@"array"];
+
+    NSEnumerator *enumerator = [array reverseObjectEnumerator];
+    id o;
+    int count = 0;
+    while (o = [enumerator nextObject]) {
+        assertThat(o, notNilValue());
+        count++;
+    }
+    assertThatInt(count, equalToInt(3));
+}
+
+- (void)testInsertObjectAtIndex {
+    NSMutableDictionary<FBGraphObject> *obj = [self createGraphObjectWithArray];
+    NSMutableArray *array = [obj objectForKey:@"array"];
+    [array insertObject:@"two" atIndex:1];
+
+    assertThat([array objectAtIndex:1], equalTo(@"two"));
+
+}
+
+- (void)testRemoveObjectAtIndex {
+    NSMutableDictionary<FBGraphObject> *obj = [self createGraphObjectWithArray];
+    NSMutableArray *array = [obj objectForKey:@"array"];
+    [array removeObjectAtIndex:1];
+
+    assertThatInteger([array count], equalToInteger(2));
+}
+
+- (void)testAddObject {
+    NSMutableDictionary<FBGraphObject> *obj = [self createGraphObjectWithArray];
+    NSMutableArray *array = [obj objectForKey:@"array"];
+    [array addObject:@"four"];
+
+    assertThat([array objectAtIndex:3], equalTo(@"four"));
+}
+
+- (void)testRemoveLastObject {
+    NSMutableDictionary<FBGraphObject> *obj = [self createGraphObjectWithArray];
+    NSMutableArray *array = [obj objectForKey:@"array"];
+    [array removeLastObject];
+
+    assertThatInteger([array count], equalToInteger(2));
+}
+
+- (void)testReplaceObjectAtIndex {
+    NSMutableDictionary<FBGraphObject> *obj = [self createGraphObjectWithArray];
+    NSMutableArray *array = [obj objectForKey:@"array"];
+    [array replaceObjectAtIndex:1 withObject:@"two"];
+
+    assertThat([array objectAtIndex:1], equalTo(@"two"));
+}
+
+- (NSMutableDictionary<FBGraphObject> *)createGraphObjectWithArray {
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    [d setObject:[NSArray arrayWithObjects:@"one", [NSMutableDictionary dictionary], @"three", nil]
+          forKey:@"array"];
+    [d setObject:[NSMutableDictionary dictionary] forKey:@"object"];
     
-    return [self batchedPostAndGetWithSession:self.defaultTestSession
-                                    graphPath:@"me/feed" 
-                                  graphObject:status];
-}
+    NSMutableDictionary<FBGraphObject> *obj = [FBGraphObject graphObjectWrappingDictionary:d];
 
-- (id)postComment:(id)comment toStatusID:(NSString*)statusID
-{
-    NSString *graphPath = [NSString stringWithFormat:@"%@/comments", statusID];
-    return [self batchedPostAndGetWithSession:self.defaultTestSession
-                                    graphPath:graphPath 
-                                  graphObject:comment];
-}
-
-- (void)testCommentRoundTrip
-{
-    id createdStatus = [self postStatusUpdate];
-    NSString *statusID = [createdStatus objectForKey:@"id"];
-    id<FBGraphObject> comment = [FBGraphObject graphObject];
-    NSString *commentMessage = @"It truly is a wonderful status update.";
-    [comment setObject:commentMessage forKey:@"message"];
-
-    id comment1 = [self postComment:comment toStatusID:statusID];
-    NSString *comment1ID = [[[comment1 objectForKey:@"id"] retain] autorelease];
-    NSString *comment1Message = [[[comment1 objectForKey:@"message"] retain] autorelease];
-
-    // Try posting the same comment to the same status update. We need to clear its ID first.
-    [comment1 removeObjectForKey:@"id"];
-    id comment2 = [self postComment:comment1 toStatusID:statusID];
-  
-    NSString *comment2ID = [comment2 objectForKey:@"id"];
-    NSString *comment2Message = [comment2 objectForKey:@"message"];
-    
-    STAssertFalse([comment1ID isEqualToString:comment2ID], @"ended up with the same comment");
-    STAssertTrue([comment1Message isEqualToString:comment2Message], @"message not round-tripped");
-}
-
-- (id)postEvent
-{
-    id<FBGraphObject> event = [FBGraphObject graphObject];
-   
-    // The "Events Timezone" platform migration affects what date/time formats Facebook accepts and returns.
-    // Apps created after 8/1/12 (or apps that have explicitly enabled the migration) should send/receive
-    // dates in ISO-8601 format. Pre-migration apps can send as Unix timestamps. Since the future is ISO-8601,
-    // that is what we support here. Apps that need pre-migration behavior can explicitly send these as
-    // integer timestamps rather than NSDates.
-    NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
-    [dateFormatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ssZ"];
-    id startTime = [NSDate dateWithTimeIntervalSinceNow:24 * 3600];
-    id endTime = [dateFormatter stringFromDate:[NSDate dateWithTimeInterval:3600 sinceDate:startTime]];
-    startTime = [dateFormatter stringFromDate:startTime];
-    
-    [event setObject:[NSString stringWithFormat:@"My event on %@", startTime]
-              forKey:@"name"];
-    [event setObject:@"This is a great event. You should all come."
-              forKey:@"description"];
-    [event setObject:startTime forKey:@"start_time"];
-    [event setObject:endTime forKey:@"end_time"];
-    [event setObject:@"My house" forKey:@"location"];
-
-    return [self batchedPostAndGetWithSession:self.defaultTestSession
-                                    graphPath:@"me/events"
-                                  graphObject:event];
-}
-
-- (void)testEventRoundTrip
-{
-    id postedEvent = [self postEvent];
-    STAssertNotNil(postedEvent, @"no event");
-    
-    [postedEvent removeObjectForKey:@"id"];
-
-    id event2 = [self batchedPostAndGetWithSession:self.defaultTestSession
-                                         graphPath:@"me/events"
-                                       graphObject:postedEvent];
-    STAssertNotNil(event2, @"no event");
-}
-
-- (NSArray*)permissionsForDefaultTestSession
-{
-    return [NSArray arrayWithObjects:@"email", 
-            @"publish_actions",
-            @"create_event", 
-            nil];
+    return obj;
 }
 
 @end
-
-#endif
-

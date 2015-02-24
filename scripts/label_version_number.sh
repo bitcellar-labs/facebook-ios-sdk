@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright 2012 Facebook
+# Copyright 2010-present Facebook.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 
-. ${FB_SDK_SCRIPT:-$(dirname $0)}/common.sh
+. "${FB_SDK_SCRIPT:-$(dirname "$0")}/common.sh"
 
 if [ "$#" -lt 2 ]; then
     echo "Usage: $0 MAJOR MINOR [HOTFIX [BETA]]"

@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright 2012 Facebook
+# Copyright 2010-present Facebook.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,51 +19,28 @@
 # Note: On Mac OS X, an easy way to generate a MACHINE_UNIQUE_USER_TAG is with the following:
 #   system_profiler SPHardwareDataType | grep -i "Serial Number (system):" | awk '{print $4}'
 
-. ${FB_SDK_SCRIPT:-$(dirname $0)}/common.sh
+. "${FB_SDK_SCRIPT:-$(dirname "$0")}/common.sh"
 
-if [ "$#" -lt 2 ]; then
-      echo "Usage: $0 APP_ID APP_SECRET [MACHINE_UNIQUE_USER_KEY]"
+if [ "$#" -lt 3 ]; then
+      echo "Usage: $0 APP_ID APP_SECRET CLIENT_TOKEN [MACHINE_UNIQUE_USER_KEY]"
       echo "  APP_ID                   your unit-testing Facebook application's App ID"
       echo "  APP_SECRET               your unit-testing Facebook application's App Secret"
+      echo "  CLIENT_TOKEN             your unit-testing Facebook application's client token"
       echo "  MACHINE_UNIQUE_USER_TAG  optional text used to ensure this machine will use its own set of test users rather than sharing"
       die 'Arguments do not conform to usage'
 fi
 
-function write_plist {
-      SIMULATOR_CONFIG_DIR="$1"/Documents
-      SIMULATOR_CONFIG_FILE="$SIMULATOR_CONFIG_DIR"/FacebookSDK-UnitTestConfig.plist
+function write_xcconfig {
+    echo "IOS_SDK_TEST_APP_ID = $2" > $1
+    echo "IOS_SDK_TEST_APP_SECRET = $3" >> $1
+    echo "IOS_SDK_TEST_CLIENT_TOKEN = $4" >> $1
+    echo "IOS_SDK_MACHINE_UNIQUE_USER_KEY = $5" >> $1
 
-      if [ ! -d "$SIMULATOR_CONFIG_DIR" ]; then
-            mkdir "$SIMULATOR_CONFIG_DIR"
-      fi
-
-      # use heredoc syntax to output the plist
-      cat > "$SIMULATOR_CONFIG_FILE" \
-<<DELIMIT
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-        <key>FacebookAppID</key>
-        <string>$2</string>
-        <key>FacebookAppSecret</key>
-        <string>$3</string>
-        <key>UniqueUserTag</key>
-        <string>$4</string>
-</dict>
-</plist>
-DELIMIT
-# end heredoc
-
-      echo "wrote unit test config file at $SIMULATOR_CONFIG_FILE" 
+    echo "Wrote test app configuration to: $1"
 }
 
-SIMULATOR_DIR=$HOME/Library/Application\ Support/iPhone\ Simulator
+XCCONFIG_FILE="$FB_SDK_SRC"/Configurations/TestAppIdAndSecret.xcconfig
 
-test -x "$SIMULATOR_DIR" || die 'Could not find simulator directory'
+write_xcconfig "$XCCONFIG_FILE" "$1" "$2" "$3" "$4"
 
-write_plist "$SIMULATOR_DIR" $1 $2 $3
 
-for VERSION_DIR in "${SIMULATOR_DIR}"/[456].*; do
-      write_plist "$VERSION_DIR" $1 $2 $3
-done

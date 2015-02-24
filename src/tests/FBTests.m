@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 Facebook
+ * Copyright 2010-present Facebook.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,333 +15,199 @@
  */
 
 #import "FBTests.h"
-#import "FBTestBlocker.h"
-#import "FBRequestConnection.h"
+
+#import <OHHTTPStubs/OHHTTPStubs.h>
+
+#import "FBAccessTokenData+Internal.h"
 #import "FBRequest.h"
-#import "FBSettings.h"
-#import "FBError.h"
-#include <pthread.h>
+#import "FBRequestConnection.h"
+#import "FBSessionTokenCachingStrategy.h"
+#import "FBSystemAccountStoreAdapter.h"
+#import "FBTestBlocker.h"
+#import "FBUtility.h"
 
-static NSMutableDictionary *mapTestCasesToSessions;
-// Concurrency not an issue today, but guard our static global in any case.
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+NSString *kTestToken = @"This is a token";
+NSString *kTestAppId = @"AnAppId";
 
-#pragma mark Private interface
-
-@interface FBTests ()
-
-- (void)issueFriendRequestInSession:(FBTestSession*)session toFriend:(NSString*)userID;
-
-@end
-
-#pragma mark -
-
-@implementation FBTests
-
-@synthesize defaultTestSession = _defaultTestSession;
-
-#pragma mark Instance-level lifecycle
-
-- (void)dealloc 
-{   
-    [_defaultTestSession release];
-    [super dealloc];
+@implementation FBTests {
+    id _mockBundle;
 }
 
-- (void)setUp
-{
-    [super setUp];
+- (void)setUp {
+    _mockBundle = [[OCMockObject partialMockForObject:[NSBundle mainBundle]] retain];
+    [[[_mockBundle stub] andReturn:[[NSUUID UUID] UUIDString]] bundleIdentifier];
+    id mockAdapter = [OCMockObject mockForClass:[FBSystemAccountStoreAdapter class]];
+    [FBSystemAccountStoreAdapter setSharedInstance:mockAdapter];
 
-    pthread_mutex_lock(&mutex);
-    
-    if (!mapTestCasesToSessions) {
-        mapTestCasesToSessions = [[NSMutableDictionary alloc] init];
-    }
-    [mapTestCasesToSessions setObject:[[NSMutableArray alloc] init] 
-                               forKey:[NSValue valueWithNonretainedObject:self]]; 
-    
-    pthread_mutex_unlock(&mutex);
+    // Mock out various parts of FBUtility that would otherwise fail/hang in commandline runs.
+    self.mockFBUtility = [OCMockObject mockForClass:[FBUtility class]];
+    FBFetchedAppSettings *dummyFBFetchedAppSettings = [[[FBFetchedAppSettings alloc] init] autorelease];
+    [[[self.mockFBUtility stub] andReturn:dummyFBFetchedAppSettings] fetchedAppSettingsIfCurrent]; // prevent fetching app settings during FBSession authorizeWithPermissions
+    [[[self.mockFBUtility stub] andReturn:nil] advertiserID];  //also stub advertiserID when it's going to access IDFA since that often hangs.
+    [[[self.mockFBUtility stub] andReturnValue:OCMOCK_VALUE(NO)] isSystemAccountStoreAvailable]; // don't try to access ac account store.
 }
 
 - (void)tearDown
 {
-    pthread_mutex_lock(&mutex);
-    
-    NSMutableArray *sessions = [mapTestCasesToSessions objectForKey:[NSValue valueWithNonretainedObject:self]];
-    [mapTestCasesToSessions removeObjectForKey:[NSValue valueWithNonretainedObject:self]];
-    
-    pthread_mutex_unlock(&mutex);
-    
-    for (FBSession *session in sessions) {
-        [session close];
-    }
-    [sessions release];
-    
+    [OHHTTPStubs removeAllStubs];
+    [_mockBundle release];
+    _mockBundle = nil;
+    [FBSystemAccountStoreAdapter setSharedInstance:nil];
+    self.mockFBUtility = nil;
     [super tearDown];
 }
 
-#pragma mark -
-#pragma mark FBTestSession creation helpers
-
-- (NSArray*)permissionsForDefaultTestSession
-{
-    return nil;
+- (OCMockObject *)mainBundleMock {
+    return _mockBundle;
 }
 
-- (FBTestSession*)defaultTestSession
-{
-    if (!_defaultTestSession) {
-        _defaultTestSession = [self getSessionWithSharedUserWithPermissions:[self permissionsForDefaultTestSession]];
+- (void)setMockFBUtility:(id)mockFBUtility {
+    if (mockFBUtility != _mockFBUtility) {
+        [_mockFBUtility stopMocking];
+        [_mockFBUtility release];
+        _mockFBUtility = [mockFBUtility retain];
     }
-    return _defaultTestSession;
 }
 
-- (FBTestSession *)getSessionWithSharedUserWithPermissions:(NSArray*)permissions
-{
-    return [self getSessionWithSharedUserWithPermissions:permissions uniqueUserTag:nil];
-}
-
-- (FBTestSession *)getSessionWithSharedUserWithPermissions:(NSArray*)permissions 
-                                             uniqueUserTag:(NSString*)uniqueUserTag
-{
-    FBTestSession *session = [FBTestSession sessionWithSharedUserWithPermissions:permissions uniqueUserTag:uniqueUserTag];
-    
-    // Need to remember all the sessions for this class.
-    pthread_mutex_lock(&mutex);
-    
-    NSMutableArray *sessions = [mapTestCasesToSessions objectForKey:[NSValue valueWithNonretainedObject:self]];
-    [sessions addObject:session];
-    
-    pthread_mutex_unlock(&mutex);
-    
-    return [self loginSession:session];
-}
-
-#pragma mark -
-#pragma mark Miscellaneous helpers
-
-- (FBTestSession *)loginSession:(FBTestSession *)session
-{
-    __block FBTestBlocker *blocker = [[FBTestBlocker alloc] init];
-    
-    FBSessionStateHandler handler = ^(FBSession *session,
-                                       FBSessionState status,
-                                       NSError *error) {
-        STAssertTrue(!error, @"!error");
-
-        [blocker signal];
-    };
-    
-    [session openWithCompletionHandler:handler];
-    
-    BOOL success = [blocker waitWithTimeout:60];
-    STAssertTrue(success, @"blocker timed out");
-    STAssertTrue(session.isOpen, @"session.isOpen");
-    
-    return session;
-}
-
-- (void)issueFriendRequestInSession:(FBTestSession*)session toFriend:(NSString*)userID
-{
-    STAssertNotNil(userID, @"missing userID");
-    NSString *graphPath = [NSString stringWithFormat:@"me/friends/%@", userID];
-    
-    __block FBTestBlocker *blocker = [[FBTestBlocker alloc] init];
-    
-    FBRequest *request = [[[FBRequest alloc] initForPostWithSession:session 
-                                                          graphPath:graphPath 
-                                                        graphObject:nil] 
-                          autorelease];
-    
-    [request startWithCompletionHandler:
-     ^(FBRequestConnection *connection, id result, NSError *error) {
-        BOOL expected = (result && !error);
-        if (error) {
-            id code = [[error userInfo] objectForKey:FBErrorHTTPStatusCodeKey];
-            // If test users are already friends, we will get a 400.
-            expected = [code integerValue] == 400;
-        }
-        STAssertTrue(expected, @"unexpected result");
-        [blocker signal];
-    }];
-    
-    [blocker wait];
-}
-
-- (void)makeTestUserInSession:(FBTestSession*)session1 friendsWithTestUserInSession:(FBTestSession*)session2 
-{
-    [self issueFriendRequestInSession:session1 toFriend:session2.testUserID];
-    [self issueFriendRequestInSession:session2 toFriend:session1.testUserID];
-}
-
-- (void)validateGraphObject:(id<FBGraphObject>)graphObject hasProperties:(NSArray*)propertyNames
-{
-    for (NSString *propertyName in propertyNames) {
-        STAssertNotNil([graphObject objectForKey:propertyName], 
-                       [NSString stringWithFormat:@"missing property '%@'", propertyName]);
-    }    
-}
-
-- (void)validateGraphObjectWithId:(NSString*)idString hasProperties:(NSArray*)propertyNames withSession:(FBSession*)session {
-    __block FBTestBlocker *blocker = [[FBTestBlocker alloc] init];
-    
-    FBRequest *request = [[[FBRequest alloc] initWithSession:session 
-                                                   graphPath:idString]
-                          autorelease];
-    
-    [request startWithCompletionHandler:
-     ^(FBRequestConnection *connection, id result, NSError *error) {
-        STAssertTrue(!error, @"!error");
-        STAssertTrue([idString isEqualToString:[result objectForKey:@"id"]], @"wrong id");
-        
-        [self validateGraphObject:result hasProperties:propertyNames];
-        
-        [blocker signal];
-    }];
-    [blocker wait];
-}
-
-- (void)postAndValidateWithSession:(FBSession*)session graphPath:(NSString*)graphPath graphObject:(id)graphObject hasProperties:(NSArray*)propertyNames {
-    __block FBTestBlocker *blocker = [[FBTestBlocker alloc] init];
-    
-    FBRequest *request = [[[FBRequest alloc] initForPostWithSession:session 
-                                                          graphPath:graphPath 
-                                                        graphObject:graphObject] 
-                          autorelease];
-    
-    [request startWithCompletionHandler:
-     ^(FBRequestConnection *connection, id result, NSError *error) {
-        STAssertTrue(!error, @"!error");
-        if (!error) {
-            NSString *newObjectId = [result objectForKey:@"id"];
-            [self validateGraphObjectWithId:newObjectId
-                              hasProperties:propertyNames
-                                withSession:session];
-        } 
-        [blocker signal];
-    }];
-    
-    [blocker wait];    
-}
-
-// Unit tests failing? Turn on some logging with this helper.
-- (void)logRequestsAndConnections
-{
-    [FBSettings setLoggingBehavior:[NSSet setWithObjects:
-                                   FBLoggingBehaviorFBRequests,
-                                   FBLoggingBehaviorFBURLConnections,
-                                   FBLoggingBehaviorAccessTokens,
-                                   nil]];
-}
-
-- (id)batchedPostAndGetWithSession:(FBSession*)session 
-                         graphPath:(NSString*)graphPath 
-                       graphObject:(id)graphObject {
-    FBRequestConnection *connection = [[FBRequestConnection alloc] init];
-    
-    // Create the thing.
-    FBRequest *postRequest = [[FBRequest alloc] initForPostWithSession:session 
-                                                              graphPath:graphPath 
-                                                                graphObject:graphObject];
-    [connection addRequest:postRequest 
-         completionHandler:
-     ^(FBRequestConnection *connection, id result, NSError *error) {
-         STAssertTrue(!error, @"got unexpected error");
-     }
-            batchEntryName:@"postRequest"];
-    
-    FBRequest *getRequest = [[FBRequest alloc] initWithSession:session 
-                                                     graphPath:@"{result=postRequest:$.id}"
-                                                     parameters:nil
-                                                     HTTPMethod:nil];
-    __block id createdObject = nil;
-    __block FBTestBlocker *blocker = [[FBTestBlocker alloc] init];
-    [connection addRequest:getRequest 
-         completionHandler:
-     ^(FBRequestConnection *connection, id result, NSError *error) {
-         STAssertTrue(!error, @"got unexpected error");
-         STAssertNotNil(result, @"didn't get expected result");
-         createdObject = [result retain];
-         [blocker signal];
-     }];
- 
-    [connection start];
-    [blocker wait];
-    
-    [postRequest release];
-    [connection release];
-    [blocker release];
-    
-    return [createdObject autorelease];
-}
-
-size_t getPixels(void *info, void *buffer, size_t count) {
-    char *c = buffer;
-    for (int i = 0; i < count; ++i) {
-        *c = arc4random() % 256;
-    }
-    return count;
-}
-
-- (UIImage *)createSquareTestImage:(int)size
-{
-    CGDataProviderSequentialCallbacks providerCallbacks;
-    memset(&providerCallbacks, 0, sizeof(providerCallbacks));
-    providerCallbacks.getBytes = getPixels;
-    
-    CGDataProviderRef provider = CGDataProviderCreateSequential(NULL, &providerCallbacks);
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceGray();
-    
-    int width = size;
-    int height = size;
-    int bitsPerComponent = 8;
-    int bitsPerPixel = 8;
-    int bytesPerRow = width * (bitsPerPixel/8);
-    
-    CGImageRef cgImage = CGImageCreate(width,
-                                       height,
-                                       bitsPerComponent,
-                                       bitsPerPixel,
-                                       bytesPerRow,
-                                       colorSpace,
-                                       kCGBitmapByteOrderDefault,
-                                       provider,
-                                       NULL,
-                                       NO,
-                                       kCGRenderingIntentDefault);
-    
-    UIImage *image = [UIImage imageWithCGImage:cgImage];
-    
-    CGColorSpaceRelease(colorSpace);
-    CGDataProviderRelease(provider);
-    CGImageRelease(cgImage);
-    
-    return image;
-}
-
-#pragma mark -
 #pragma mark Handlers
 
-- (FBRequestHandler)handlerExpectingSuccessSignaling:(FBTestBlocker*)blocker {
-    FBRequestHandler handler = 
-     ^(FBRequestConnection *connection, id result, NSError *error) {
-        STAssertTrue(!error, @"got unexpected error");
-        STAssertNotNil(result, @"didn't get expected result");
-        [blocker signal];
-    };
-    return [[handler copy] autorelease];
-}
-
-- (FBRequestHandler)handlerExpectingFailureSignaling:(FBTestBlocker*)blocker {
-    FBRequestHandler handler = 
+- (FBRequestHandler)handlerExpectingSuccessSignaling:(FBTestBlocker *)blocker {
+    FBRequestHandler handler =
     ^(FBRequestConnection *connection, id result, NSError *error) {
-        STAssertNotNil(error, @"didn't get expected error");
-        STAssertTrue(!result, @"got unexpected result");
+        XCTAssertTrue(!error, @"got unexpected error");
+        XCTAssertNotNil(result, @"didn't get expected result");
         [blocker signal];
     };
     return [[handler copy] autorelease];
 }
 
-#pragma mark -
+- (FBRequestHandler)handlerExpectingFailureSignaling:(FBTestBlocker *)blocker {
+    FBRequestHandler handler =
+    ^(FBRequestConnection *connection, id result, NSError *error) {
+        XCTAssertNotNil(error, @"didn't get expected error");
+        XCTAssertTrue(!result, @"got unexpected result");
+        [blocker signal];
+    };
+    return [[handler copy] autorelease];
+}
+
+#pragma mark - Session mocking
+
+- (FBAccessTokenData *)createValidMockToken {
+
+    FBAccessTokenData *token = [FBAccessTokenData  createTokenFromString:kTestToken
+                                                             permissions:nil
+                                                          expirationDate:[NSDate dateWithTimeIntervalSinceNow:3600]
+                                                               loginType:FBSessionLoginTypeNone
+                                                             refreshDate:nil
+                                                  permissionsRefreshDate:nil
+                                                                   appID:kTestAppId];
+
+    FBAccessTokenData *mockToken = [OCMockObject partialMockForObject:token];
+    return mockToken;
+}
+
+
+- (FBSession *)createAndOpenSessionWithMockToken {
+    FBAccessTokenData *mockToken = [self createValidMockToken];
+    FBSessionTokenCachingStrategy *mockStrategy = [self createMockTokenCachingStrategyWithToken:mockToken];
+
+    FBSession *session = [[FBSession alloc] initWithAppID:kTestAppId
+                                              permissions:nil
+                                          defaultAudience:FBSessionDefaultAudienceNone
+                                          urlSchemeSuffix:nil
+                                       tokenCacheStrategy:mockStrategy];
+
+    [session openWithCompletionHandler:nil];
+
+    return session;
+
+}
+
+- (FBSessionTokenCachingStrategy *)createMockTokenCachingStrategyWithExpiredToken {
+    FBAccessTokenData *token = [FBAccessTokenData  createTokenFromString:kTestToken
+                                                             permissions:nil
+                                                          expirationDate:[NSDate dateWithTimeIntervalSince1970:0]
+                                                               loginType:FBSessionLoginTypeNone
+                                                             refreshDate:nil];
+    return [self createMockTokenCachingStrategyWithToken:token];
+}
+
+- (FBSessionTokenCachingStrategy *)createMockTokenCachingStrategyWithValidToken {
+    FBAccessTokenData *token = [self createValidMockToken];
+    return [self createMockTokenCachingStrategyWithToken:token];
+}
+
+- (FBSessionTokenCachingStrategy *)createMockTokenCachingStrategyWithToken:(FBAccessTokenData *)token {
+    FBSessionTokenCachingStrategy *strategy = [OCMockObject mockForClass:[FBSessionTokenCachingStrategy class]];
+
+    [[[(id)strategy stub] andReturn:token] fetchFBAccessTokenData];
+
+    return strategy;
+}
+
+- (void)waitForMainQueueToFinish {
+    FBTestBlocker *blocker = [[FBTestBlocker alloc] init];
+    dispatch_async(dispatch_get_main_queue(), ^() {
+        [blocker signal];
+    });
+
+    XCTAssertTrue([blocker waitWithTimeout:30], @"blocker timed out");
+
+    [blocker release];
+}
+
+#pragma mark - HTTP stubbing helpers
+
+- (void)stubAllResponsesWithResult:(id)result
+{
+    [self stubAllResponsesWithResult:result statusCode:200];
+}
+
+- (void)stubAllResponsesWithResult:(id)result
+                        statusCode:(int)statusCode
+{
+    [self stubAllResponsesWithResult:result statusCode:statusCode callback:nil];
+}
+
+- (void)stubAllResponsesWithResult:(id)result
+                        statusCode:(int)statusCode
+                          callback:(HTTPStubCallback)callback
+{
+    return [self stubMatchingRequestsWithResponses:@{@"" : result}
+                                        statusCode:statusCode
+                                          callback:callback];
+}
+
+- (void)stubMatchingRequestsWithResponses:(NSDictionary *)requestsAndResponses
+                               statusCode:(int)statusCode
+                                 callback:(HTTPStubCallback)callback
+{
+    id (^matchingKey)(NSString *) = ^id (NSString *urlString) {
+        for (NSString *substring in requestsAndResponses.allKeys) {
+            // The first @"" always matches
+            if (substring.length == 0 ||
+                [urlString rangeOfString:substring].location != NSNotFound) {
+                return substring;
+            }
+        }
+        return nil;
+    };
+
+    [OHHTTPStubs stubRequestsPassingTest:^BOOL(NSURLRequest *request) {
+        if (callback) {
+            callback(request);
+        }
+
+        return matchingKey(request.URL.absoluteString) != nil;
+    } withStubResponse:^OHHTTPStubsResponse *(NSURLRequest *request) {
+        id result = requestsAndResponses[matchingKey(request.URL.absoluteString)];
+        NSData *data = [[FBUtility simpleJSONEncode:result] dataUsingEncoding:NSUTF8StringEncoding];
+
+        return [OHHTTPStubsResponse responseWithData:data
+                                          statusCode:statusCode
+                                             headers:nil];
+    }];
+}
 
 @end
